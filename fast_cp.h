@@ -3,6 +3,8 @@
 #include <mutex>
 #include <condition_variable>
 #include <vector>
+#include <future>
+#include <algorithm>
 #include <queue>
 #include <thread>
 
@@ -35,37 +37,29 @@ public:
 	long long file_size_;
 	std::string out_file_;
 
-	void Read(int i, int j) {                                  //读入数据
+	vector<char> Read(int i, int j, std::promise<vector<char> > &promise_read) {                                  //读入数据
 		in_.seekg(i*buffer_size_+j*buf_size_, std::ios::beg);
 		std::vector<char > buf(buf_size_);
 		in_.read(&buf[0], buf.size());           //将数据读入buf中
-		buffers.push(buf);                     //将buf推入buffers中，以便write函数进行处理
+		//buffers.push_back(buf);                     //将buf推入buffers中，以便write函数进行处理
+		return buf;
 	}
 
-	void ReadRest(int i,int j) {                                  //读入剩余数据
+	vector<char> ReadRest(int i,int j, std::promise<vector<char> > &promise_read) {                                  //读入剩余数据
 		in_.seekg(i*buffer_size_ + j*buf_size_, std::ios::beg);
 		auto x = in_.tellg();
 		std::vector<char > buf(file_size_ - x);
 		in_.read(&buf[0], buf.size());           //将数据读入buf中
-		buffers.push(buf);                     //将buf推入buffers中，以便write函数进行处理
+		//buffers.push_back(buf);                     //将buf推入buffers中，以便write函数进行处理
+		return buf;
 	}
 
-	int Write() {                                 //写入数据
-		bool not_empty = false;
-		if (!buffers.empty())
-			not_empty = true;
-		if (not_empty) {
-			std::vector<char > buf = buffers.front();             //取出当前缓存中最早读入的数据
-			//buffers.pop();                        
-			out_.write(&buf[0], buf.size());
-			out_.flush();
-			buffers.pop();
-			buf.clear();              //释放内存
-		}
-		else {
-			return -1;
-		}
-		return 0;
+	void Write(vector<char> buf) {
+		//std::vector<char > buf = buffers.front();             //取出当前缓存中最早读入的数据		                       
+		out_.write(&buf[0], buf.size());
+		out_.flush();
+		//buffers.erase(buffers.begin());
+		//buf.clear();              //释放内存
 	}
 
 	void Prepare() {                  //将用户输入转化为文件流
@@ -86,7 +80,9 @@ public:
 private:
 	std::ifstream in_;
 	std::ofstream out_;
-	std::queue<std::vector<char>> buffers;
+	//std::queue<std::vector<char>> buffers;
+	vector<vector<char> > buffers;
+
 };
 
 void run_fast_cp(size_t buffer_size, int thread, std::string &in_file, std::string &out_file) {
@@ -95,14 +91,21 @@ void run_fast_cp(size_t buffer_size, int thread, std::string &in_file, std::stri
 	std::vector<std::thread> workers;
 	workers.reserve(thread);
 	int deal_num = cvFile.file_size_ / cvFile.buffer_size_ + 1;
+	std::vector<std::vector<char> > buffers1;
+	buffers1.reserve(thread);
+	std::promise<vector<char> > promise_read;
+	std::future<vector<char> > future_read = promise_read.get_future();
+
 	cout << cvFile.file_size_ << endl;
 	cout << cvFile.buffer_size_ << endl;
 	cout << deal_num << endl;
+
 	if (deal_num > 1) {
 		for (int i = 0; i < deal_num - 1; i++)
 		{
 			for (int j = 0; j< thread; j++) {
-				workers.emplace_back(std::thread(&CVFile::Read, &cvFile, i, j));
+				workers.emplace_back(std::thread(&CVFile::Read, &cvFile, i, j, std::ref(promise_read)));
+				buffers1[j] = future_read.get();
 			}
 			for (auto && worker : workers)
 			{
@@ -110,10 +113,9 @@ void run_fast_cp(size_t buffer_size, int thread, std::string &in_file, std::stri
 			}
 			for (int m = 0; m < thread; m++)
 			{
-				int write_done = cvFile.Write();
-				if (write_done == -1)
-					break;
+				cvFile.Write(buffers1[m]);
 			}
+			buffers1.clear();
 			workers.clear();
 		}
 	}
@@ -124,19 +126,18 @@ void run_fast_cp(size_t buffer_size, int thread, std::string &in_file, std::stri
 
 	if (deal_rest_num > 1) {
 		for (int j = 0; j< deal_rest_num - 1; j++) {
-			workers.emplace_back(std::thread(&CVFile::Read, &cvFile, deal_num - 1, j));
+			workers.emplace_back(std::thread(&CVFile::Read, &cvFile, deal_num - 1, j, std::ref(promise_read)));
+			buffers1[j] = future_read.get();
 		}
 	}
-	workers.emplace_back(std::thread(&CVFile::ReadRest, &cvFile, deal_num - 1, deal_rest_num - 1));
+	workers.emplace_back(std::thread(&CVFile::ReadRest, &cvFile, deal_num - 1, deal_rest_num - 1, std::ref(promise_read)));
 	for (auto && worker : workers)
 	{
 		worker.join();
 	}
 	for (int m = 0; m < deal_rest_num; m++)
 	{
-		int write_done = cvFile.Write();
-		if (write_done == -1)
-			break;
+		cvFile.Write(buffers1[m]);
 	}
 	workers.clear();
 
