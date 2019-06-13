@@ -3,8 +3,6 @@
 #include <mutex>
 #include <condition_variable>
 #include <vector>
-#include <algorithm>
-#include <queue>
 #include <thread>
 
 using namespace std;
@@ -30,38 +28,28 @@ public:
 
 	size_t buffer_size_;
 	int thread_;
-	size_t buf_size_ = 0;                              //单次处理的数据量
+	size_t buf_size_;                              //单次处理的数据量
 
 	std::string in_file_;
 	long long file_size_;
 	std::string out_file_;
 
-	void Read(int i, int j) {                                  //读入数据
+	void Read(vector<char> buf, int i, int j) {                                  //读入数据
 		in_.seekg(i*buffer_size_ + j*buf_size_, std::ios::beg);
-		std::vector<char > buf(buf_size_);
-		in_.read(&buf[0], buf.size());           //将数据读入buf中
-		buf.push_back(char(j));
-		buffers.push_back(buf);                     //将buf推入buffers中，以便write函数进行处理
+		in_.read(&buf[0], buf.size());           //将数据读入buf中   
 	}
 
-	void ReadRest(int i, int j) {                                  //读入剩余数据
+	void ReadRest(vector<char> buf, int i, int j) {                                  //读入剩余数据
 		in_.seekg(i*buffer_size_ + j*buf_size_, std::ios::beg);
 		auto x = in_.tellg();
-		std::vector<char > buf(file_size_ - x);
+		buf.resize(file_size_ - x);
 		in_.read(&buf[0], buf.size());           //将数据读入buf中
-		buf.push_back(char(j));
-		buffers.push_back(buf);                     //将buf推入buffers中，以便write函数进行处理
 	}
 
-	void Write() {
-		while (!buffers.empty())
-		{
-			std::vector<char > buf = buffers.front();             //取出当前缓存中最早读入的数据		                       
-			out_.write(&buf[0], buf.size() - 1);
-			out_.flush();
-			buffers.erase(buffers.begin());
-			buf.clear();              //释放内存
-		}
+	void Write(vector<char> buf) {	                       
+		out_.write(&buf[0], buf.size());
+		out_.flush();
+		buf.clear();         
 	}
 
 	void Prepare() {                  //将用户输入转化为文件流
@@ -83,7 +71,7 @@ private:
 	std::ifstream in_;
 	std::ofstream out_;
 	//std::queue<std::vector<char>> buffers;
-	vector<vector<char> > buffers;
+	//vector<vector<char> > buffers;
 
 };
 
@@ -93,6 +81,13 @@ void run_fast_cp(size_t buffer_size, int thread, std::string &in_file, std::stri
 	std::vector<std::thread> workers;
 	workers.reserve(thread);
 	int deal_num = cvFile.file_size_ / cvFile.buffer_size_ + 1;
+	vector<vector<char> > buffers;
+	buffers.resize(thread);
+	for (int i = 0; i < thread; i++)
+	{
+		buffers[i].resize(cvFile.buf_size_);
+	}
+
 	cout << cvFile.file_size_ << endl;
 	cout << cvFile.buffer_size_ << endl;
 	cout << deal_num << endl;
@@ -100,13 +95,16 @@ void run_fast_cp(size_t buffer_size, int thread, std::string &in_file, std::stri
 		for (int i = 0; i < deal_num - 1; i++)
 		{
 			for (int j = 0; j< thread; j++) {
-				workers.emplace_back(std::thread(&CVFile::Read, &cvFile, i, j));
+				workers.emplace_back(std::thread(&CVFile::Read, &cvFile, buffers[j], i, j));
 			}
 			for (auto && worker : workers)
 			{
 				worker.join();
 			}
-			cvFile.Write();
+			for (int m = 0; m < thread; m++)
+			{
+				cvFile.Write(buffers[m]);
+			}
 			workers.clear();
 		}
 	}
@@ -117,15 +115,18 @@ void run_fast_cp(size_t buffer_size, int thread, std::string &in_file, std::stri
 
 	if (deal_rest_num > 1) {
 		for (int j = 0; j< deal_rest_num - 1; j++) {
-			workers.emplace_back(std::thread(&CVFile::Read, &cvFile, deal_num - 1, j));
+			workers.emplace_back(std::thread(&CVFile::Read, &cvFile, buffers[j], deal_num - 1, j));
 		}
 	}
-	workers.emplace_back(std::thread(&CVFile::ReadRest, &cvFile, deal_num - 1, deal_rest_num - 1));
+	workers.emplace_back(std::thread(&CVFile::ReadRest, &cvFile, buffers[deal_rest_num - 1], deal_num - 1, deal_rest_num - 1));
 	for (auto && worker : workers)
 	{
 		worker.join();
 	}
-	cvFile.Write();
+	for (int m = 0; m < deal_rest_num; m++)
+	{
+		cvFile.Write(buffers[m]);
+	}
 	workers.clear();
 
 
